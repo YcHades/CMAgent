@@ -26,7 +26,7 @@ from typing import List, Dict, Any, Generator, Optional, Tuple, Callable, Union
 sys.path.append(str(Path(__file__).parent.parent))
 
 from llm import LLMManager
-from tool_utils import ToolManager
+from tool_manager import ToolManager
 from utils import extract_json_codeblock
 
 @dataclass
@@ -174,61 +174,82 @@ class ToolUseModule(BaseModule):
     工具调用模块：提供工具加载、解析和单次调用能力
     
     支持两种类型的工具：
-    1. MCP 工具：通过 MCP 服务器提供的远程工具
-    2. 本地工具：从 toolbox 文件夹加载的 Python 函数
+    1. 本地工具：从 Python 文件/文件夹加载的函数
+    2. MCP 工具：通过 MCP 服务器提供的远程工具（HTTP/STDIO）
+    
+    特性：
+    - MCP 工具名称自动添加命名空间前缀（避免冲突）
+    - 支持同时配置多个 MCP 服务器
+    - 懒加载机制：仅在首次使用时加载工具
+    - 自动参数校验和结果序列化
     """
     
     def __init__(
         self,
-        mcp_servers: List[str] = None,
-        local_tools_folder: str = None,
-        local_files_selector: List[str] = None,
+        mcp_config: Optional[Dict[str, Any]] = None,
+        local_tools_folder: Optional[str] = None,
+        local_files_selector: Optional[List[str]] = None,
         tool_parse_template: str = r"<tool_call>\n(.*?)\n</tool_call>",
         context_processor: Optional[Callable] = None,
         name: Optional[str] = None
     ):
         """
         Args:
-            mcp_servers: MCP 服务器 URL 列表，None 表示不使用 MCP 工具
-            local_tools_folder: 本地工具文件夹路径，None 表示不使用本地工具
-            local_files_selector: 本地工具文件名列表，None 表示加载文件夹下所有 .py 文件
-            tool_parse_template: 工具调用解析正则表达式模板
+            mcp_config: MCP 配置字典，格式：
+                {
+                    "mcpServers": {
+                        "server_name": {
+                            "command": "uvx",
+                            "args": [...],
+                            "transport": "stdio"
+                        }
+                    }
+                }
+            local_tools_folder: 本地工具文件夹路径
+            local_files_selector: 要加载的本地工具文件名列表（不含 .py 后缀）
+            tool_parse_template: 工具调用解析正则表达式
             context_processor: 上下文处理器函数
             name: 模块名称
+            
+        注意：
+            MCP 工具会自动添加服务器别名前缀，如: server_name_tool_name
         """
         super().__init__(name or "ToolUseModule", context_processor)
         
-        # 配置参数
-        self.mcp_servers = mcp_servers
+        self.mcp_config = mcp_config
         self.local_tools_folder = local_tools_folder
-        self.local_tools_modules = local_files_selector
+        self.local_files_selector = local_files_selector
         self.tool_parse_template = tool_parse_template
         
-        # 使用 ToolManager 统一管理工具
         self.tool_manager = ToolManager()
-        # 用于工具懒加载的标志，仅在第一次调用时或者获取工具描述时加载
         self._tools_loaded = False
 
     def load_tools(self):
-        """加载工具：从本地和 MCP 服务器"""
+        """加载工具：从本地文件夹和 MCP 配置
+        
+        注意：MCP 工具名称会自动添加命名空间前缀，如: server_name_tool_name
+        """
         if self._tools_loaded:
             return
         
-        # 1. 加载本地工具
+        # 加载本地工具
         if self.local_tools_folder:
             self.tool_manager.load_from_folder(
                 tools_folder=self.local_tools_folder,
-                local_files_selector=self.local_tools_modules
+                local_files_selector=self.local_files_selector
             )
         
-        # 2. 加载 MCP 工具
-        if self.mcp_servers:
-            self.tool_manager.load_from_mcp_servers(self.mcp_servers)
+        # 加载 MCP 工具配置（工具会在首次调用时才实际加载）
+        if self.mcp_config:
+            self.tool_manager.load_from_mcp_config(self.mcp_config)
         
         self._tools_loaded = True
-
         count = self.tool_manager.get_tool_count()
-        self.log("info", f"Total {sum(count.values())} tools loaded: {count}")
+        mcp_servers = len(self.tool_manager.mcp_configs) if hasattr(self.tool_manager, 'mcp_configs') else 0
+        if mcp_servers > 0:
+            self.log("info", f"Loaded {count.get('local', 0)} local tools, registered {mcp_servers} MCP server(s) (tools will load on first use)")
+        else:
+            self.log("info", f"Loaded {sum(count.values())} tools: {count}")
     
     def tool_parser(self, text: str) -> List[Tuple[str, Dict[str, Any]]]:
         """
@@ -252,15 +273,14 @@ class ToolUseModule(BaseModule):
         return tool_calls
     
     def call_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> str:
-        """
-        调用工具并返回结果
+        """调用工具并返回结果
         
         Args:
             tool_name: 工具名称
             tool_args: 工具参数
             
         Returns:
-            工具调用结果
+            工具调用结果，如果失败则返回错误信息
         """
         if not self._tools_loaded:
             self.load_tools()
@@ -268,12 +288,30 @@ class ToolUseModule(BaseModule):
         try:
             result = self.tool_manager.call_tool(tool_name, tool_args)
             return result
+            
         except ValueError as e:
-            self.log("error", f"Tool not found: {tool_name}: {e}\n{traceback.format_exc()}")
-            return f"Error: {str(e)}"
+            # 工具不存在或参数错误
+            error_msg = f"Tool error: {str(e)}"
+            self.log("error", f"Tool '{tool_name}' validation failed: {e}")
+            return error_msg
+            
+        except RuntimeError as e:
+            # MCP 连接或运行时错误
+            error_msg = str(e)
+            if "MCP server connection lost" in error_msg or "failed to connect" in error_msg:
+                self.log("warning", f"MCP tool '{tool_name}' connection issue: {e}")
+                return (
+                    f"Tool '{tool_name}' temporarily unavailable due to connection issues. "
+                    f"The MCP server may need to restart. Please try again or use an alternative approach."
+                )
+            else:
+                self.log("error", f"Tool '{tool_name}' runtime error: {e}")
+                return f"Tool error: {str(e)}"
+                
         except Exception as e:
-            self.log("error", f"Error calling tool {tool_name}: {e}\n{traceback.format_exc()}")
-            return f"Error: {str(e)}"
+            # 其他未预期的错误
+            self.log("error", f"Unexpected error calling tool '{tool_name}': {e}\n{traceback.format_exc()}")
+            return f"Unexpected tool error: {str(e)}"
     
     def process(self, messages: List[Dict[str, Any]]) -> Generator[str, None, List[Dict[str, Any]]]:
         """
@@ -361,10 +399,10 @@ class ReActModule(BaseModule):
     def __init__(
         self,
         model_name: str,
-        config_path: str = None,
-        mcp_servers: List[str] = None,
-        local_tools_folder: str = None,
-        local_files_selector: List[str] = None,
+        config_path: Optional[str] = None,
+        mcp_config: Optional[Dict[str, Any]] = None,
+        local_tools_folder: Optional[str] = None,
+        local_files_selector: Optional[List[str]] = None,
         max_iterations: int = 10,
         context_processor: Optional[Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]] = None,
         name: Optional[str] = None
@@ -372,9 +410,11 @@ class ReActModule(BaseModule):
         """
         Args:
             model_name: 模型名称
-            config_path: LLM配置文件路径
-            mcp_servers: MCP 服务器列表
-            max_iterations: 最大迭代次数
+            config_path: LLM 配置文件路径
+            mcp_config: MCP 配置字典
+            local_tools_folder: 本地工具文件夹路径
+            local_files_selector: 本地工具文件名列表
+            max_iterations: 最大 ReAct 循环迭代次数
             context_processor: 上下文处理器函数
             name: 模块名称
         """
@@ -387,9 +427,9 @@ class ReActModule(BaseModule):
         # 组合 LLM 和 Tool 模块
         self.llm_module = LLMModule(model_name, config_path)
         self.tool_module = ToolUseModule(
+            mcp_config=mcp_config,
             local_tools_folder=local_tools_folder,
             local_files_selector=local_files_selector,
-            mcp_servers=mcp_servers,
         )
     
     def process(self, messages: List[Dict[str, Any]]) -> Generator[str, None, List[Dict[str, Any]]]:
@@ -508,9 +548,10 @@ class PlanAndSolveModule(BaseModule):
     def __init__(
         self,
         model_name: str,
-        config_path: str = None,
-        mcp_servers: str = None,
-        local_tools_folder: str = None,
+        config_path: Optional[str] = None,
+        mcp_config: Optional[Dict[str, Any]] = None,
+        local_tools_folder: Optional[str] = None,
+        local_files_selector: Optional[List[str]] = None,
         max_iterations: int = 10,
         context_processor: Optional[Callable[[List[Dict[str, Any]]], List[Dict[str, Any]]]] = None,
         name: Optional[str] = None
@@ -518,10 +559,11 @@ class PlanAndSolveModule(BaseModule):
         """
         Args:
             model_name: 模型名称
-            config_path: 配置文件路径
-            mcp_servers: MCP服务器列表
-            local_tools_folder: 本地工具文件夹
-            max_iterations: solver最大迭代次数
+            config_path: LLM 配置文件路径
+            mcp_config: MCP 配置字典
+            local_tools_folder: 本地工具文件夹路径
+            local_files_selector: 本地工具文件名列表
+            max_iterations: solver 模块最大迭代次数
             context_processor: 上下文处理器函数
             name: 模块名称
         """
@@ -534,8 +576,9 @@ class PlanAndSolveModule(BaseModule):
         self.solver_module = ReActModule(
             model_name=model_name,
             config_path=config_path,
-            mcp_servers=mcp_servers,
+            mcp_config=mcp_config,
             local_tools_folder=local_tools_folder,
+            local_files_selector=local_files_selector,
             max_iterations=max_iterations,
         )
     
@@ -817,33 +860,73 @@ if __name__ == "__main__":
     #     {"role": "user", "content": "你好"}
     # ]))
 
-    tooluse_module = ToolUseModule(
-        local_tools_folder="toolbox",
-        mcp_servers=["http://localhost:8000"],
-        name="TestToolUseModule"
-    )
-    print(tooluse_module.get_tools_description())
-    module_output_printer(tooluse_module([
-        {"role": "assistant", "content": "<tool_call>\n{\"name\": \"greet\", \"arguments\": {\"content\": \"你好，朋友！\"}}\n</tool_call>"}
-    ]))
-
-    # react_module = ReActModule(
-    #     model_name="Qwen3-14B",
+    # tooluse_module = ToolUseModule(
     #     local_tools_folder="toolbox",
-    #     # mcp_servers=["http://localhost:8000"],
-    #     name="TestReActModule"
-    # )
-    # module_output_printer(react_module([
-    #     {"role": "system", "content": 
-    #         f"你是一个Agent，可以通过<tool_call>\n{{'name': ..., 'arguments': ...\}}\n</tool_call>格式调用工具\n你可以使用的工具如下：\n{tooluse_module.get_tools_description()}\n需要时使用工具。"
+    #     mcp_config={
+    #         "mcpServers": {
+    #             "browser_use": {
+    #                 "command": "uvx",
+    #                 "args": ["--from", "browser-use[cli]", "browser-use", "--mcp"],
+    #                 "transport": "stdio"
+    #             }
+    #         }
     #     },
-    #     {"role": "user", "content": "你好Agent，你可以向我打招呼并介绍自己吗？"}
+    #     name="TestToolUseModule"
+    # )
+    # print(tooluse_module.get_tools_description())
+    # module_output_printer(tooluse_module([
+    #     {"role": "assistant", "content": "<tool_call>\n{\"name\": \"greet\", \"arguments\": {\"content\": \"你好，朋友！\"}}\n</tool_call>"}
     # ]))
+
+    react_module = ReActModule(
+        model_name="Qwen3-14B",
+        local_tools_folder="toolbox",
+        mcp_config={
+            "mcpServers": {
+                "baidu-map": {
+                  "command": "npx",
+                  "args": ["-y", "@baidumap/mcp-server-baidu-map"
+                  ],
+                  "env": {
+                    "BAIDU_MAP_API_KEY": "rakR78VnBT9ibC98jwppeUL8M94VnjEG"
+                  }
+                },
+                "math": {
+                  "url": "http://localhost:8000/sse",
+                  "transport": "sse"
+                },
+                "text": {
+                  "url": "http://localhost:8001/sse",
+                  "transport": "sse"
+                },
+                "data": {
+                  "url": "http://localhost:8002/sse",
+                  "transport": "sse"
+                }
+            }
+        },
+        name="TestReActModule"
+    )
+
+    module_output_printer(react_module([
+        {"role": "system", "content": 
+            f"你是一个Agent，可以通过<tool_call>\n{{'name': ..., 'arguments': ...}}\n</tool_call>格式调用工具\n你可以使用的工具如下：\n{react_module.tool_module.get_tools_description()}\n需要时使用工具。"
+        },
+        {"role": "user", "content": "使用工具计算88*72"}
+    ]))
 
     # plan_and_solve_module = PlanAndSolveModule(
     #     model_name="Qwen3-14B",
     #     local_tools_folder="toolbox",
-    #     # mcp_servers=["http://localhost:8000"],
+    #     mcp_config={
+    #         "mcpServers": {
+    #             "browser_use": {
+    #                 "command": "uvx",
+    #                 "args": ["--from", "browser-use[cli]", "browser-use", "--mcp"],
+    #                 "transport": "stdio"
+    #             }
+    #         }
+    #     },
     #     name="TestPlanAndSolveModule"
     # )
     # module_output_printer(plan_and_solve_module([
