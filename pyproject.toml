@@ -1,0 +1,15 @@
+[project]
+name = "cmagent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dirtyjson>=1.0.8",
+    "dotenv>=0.9.9",
+    "fastmcp>=2.14.1",
+    "numpy>=2.3.5",
+    "openai>=2.11.0",
+    "pytest>=9.0.2",
+    "pyyaml>=6.0.3",
+]
