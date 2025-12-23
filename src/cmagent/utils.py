@@ -1,8 +1,26 @@
-from typing import Any, Dict, Optional, Tuple
 import re
+import json
 import logging
 import dirtyjson
+from typing import Any, Dict, Generator, Optional, Tuple
 
+from .modules.base import ModuleChunk
+
+def module_output_printer(generator: Generator[ModuleChunk, None, None]):
+    """
+    打印模块的流式输出结果
+    """
+    for chunk in generator:
+        # 打印流式内容
+        if chunk.content:
+            print(chunk.content, end='', flush=True)
+        
+        # 最后打印完整的消息列表
+        if chunk.finished:
+            print("\n\n=== Final Context ===")
+            for i, msg in enumerate(chunk.messages, 1):
+                print(f"\n[{i}] {msg['role'].upper()}:")
+                print(json.dumps(msg, indent=2, ensure_ascii=False))
 
 def extract_json_codeblock(md_text: str) -> Tuple[Dict[str, Any], Optional[str]]:
     match = re.search(r"```json[^\n]*\r?\n(.*?)\r?\n?```", md_text, re.DOTALL | re.IGNORECASE)
