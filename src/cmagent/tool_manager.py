@@ -22,6 +22,8 @@ import json
 import logging
 import os
 import re
+import sys
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, get_args, get_origin
 
 from fastmcp import Client
@@ -122,8 +124,12 @@ class ToolManager:
             for tool in self.tool_details
         )
 
+    def get_tools_schema_object(self) -> List[Dict[str, Any]]:
+        """获取所有工具的 OpenAI function calling schema 对象"""
+        return [tool["schema"] for tool in self.tool_details]
+
     def get_tools_description(self) -> str:
-        """获取所有工具的 OpenAI function calling schema（LLM 格式）"""
+        """获取所有工具的 OpenAI function calling schema（序列化格式，用于LLM Prompt）"""
         return "\n".join(
             json.dumps(tool["schema"], ensure_ascii=False)
             for tool in self.tool_details
@@ -141,18 +147,55 @@ class ToolManager:
         """从文件夹批量加载本地 Python 工具
         
         Args:
-            tools_folder: 工具文件夹路径（相对或绝对）
+            tools_folder: 工具文件夹路径（相对或绝对）或包路径（如 cmagent.toolbox）
             local_files_selector: 文件名列表（不含.py），None 表示加载全部
         """
+        module_base, folder_path = self._resolve_tools_folder(tools_folder)
+        if not folder_path:
+            return
+
         if local_files_selector is None:
             local_files_selector = [
                 filename[:-3]
-                for filename in os.listdir(tools_folder)
+                for filename in os.listdir(folder_path)
                 if filename.endswith(".py") and filename != "__init__.py"
             ]
 
         for file_name in local_files_selector:
-            self._load_pyfile(file_name, tools_folder)
+            self._load_pyfile(file_name, module_base=module_base)
+
+    def _resolve_tools_folder(self, tools_folder: str) -> Tuple[Optional[str], Optional[str]]:
+        """解析工具目录的模块名和路径"""
+        folder_path = Path(tools_folder)
+        if folder_path.exists():
+            module_base = None
+            if isinstance(tools_folder, str) and "/" not in tools_folder and "\\" not in tools_folder:
+                module_base = tools_folder
+            if module_base is None and str(folder_path) not in sys.path:
+                sys.path.insert(0, str(folder_path))
+            return module_base, str(folder_path)
+
+        try:
+            module = importlib.import_module(tools_folder)
+        except ModuleNotFoundError:
+            if "." not in tools_folder:
+                alt_name = f"cmagent.{tools_folder}"
+                try:
+                    module = importlib.import_module(alt_name)
+                except ModuleNotFoundError:
+                    self.logger.error(f"✗ Tools folder not found: {tools_folder}")
+                    return None, None
+            else:
+                self.logger.error(f"✗ Tools folder not found: {tools_folder}")
+                return None, None
+
+        if not hasattr(module, "__path__"):
+            self.logger.error(f"✗ Tools folder is not a package: {tools_folder}")
+            return None, None
+
+        module_base = module.__name__
+        folder_path = str(next(iter(module.__path__)))
+        return module_base, folder_path
 
     def load_from_mcp_config(self, mcp_config: Dict[str, Any]):
         """从配置加载 MCP 工具（延迟连接策略）
@@ -353,10 +396,10 @@ class ToolManager:
             "original_name": tool_name,
         })
 
-    def _load_pyfile(self, file_name: str, folder_name: Optional[str] = None):
+    def _load_pyfile(self, file_name: str, module_base: Optional[str] = None):
         """从 Python 文件加载所有公开函数"""
         try:
-            module_name = f"{folder_name}.{file_name}" if folder_name else file_name
+            module_name = f"{module_base}.{file_name}" if module_base else file_name
             module = importlib.import_module(module_name)
 
             loaded_count = 0
@@ -650,11 +693,7 @@ class ToolManager:
         }
 
 
-# ==============================================================================
-# 测试代码
-# ==============================================================================
-
-if __name__ == "__main__":
+def main():
     logging.basicConfig(level=logging.INFO)
 
     tm = ToolManager()
@@ -664,3 +703,7 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Registered tools:\n", tm.list_tools())
     print("Tool counts:", tm.get_tool_count())
+
+
+if __name__ == "__main__":
+    main()

@@ -10,117 +10,16 @@ Module Framework for Agent Construction
 6. 每个模块有独立的上下文记忆
 """
 
-
-
 import re
-import sys
 import json
 import traceback
 import uuid
-import logging
-from pathlib import Path
-from dataclasses import dataclass
-from abc import ABC, abstractmethod
-from typing import List, Dict, Any, Generator, Optional, Tuple, Callable, Union
+from typing import List, Dict, Any, Generator, Optional, Tuple, Callable
 
-sys.path.append(str(Path(__file__).parent.parent))
-
-from llm import LLMManager
-from tool_manager import ToolManager
-from utils import extract_json_codeblock
-
-@dataclass
-class ModuleChunk:
-    """模块输出的数据块
-    
-    设计原则：
-    - content: 始终是字符串，用于流式显示
-    - messages: 完整的消息列表，只在 finished=True 时有值
-    - metadata: 额外的元数据信息
-    """
-    content: str = ""  # 流式文本内容
-    finished: bool = False  # 是否是最后一个 chunk
-    messages: Optional[List[Dict[str, Any]]] = None  # 最终的消息列表
-    metadata: Optional[Dict[str, Any]] = None  # 用于传递额外信息
-
-class BaseModule(ABC):
-    """
-    基础模块抽象类
-    """
-    
-    def __init__(self, name: Optional[str] = None, context_processor: Optional[Callable] = None):
-        """
-        Args:
-            name: 模块名称,用于日志和调试
-            context_processor: 上下文处理器函数，用于自定义初始上下文（如添加系统消息、转换格式等）
-        """
-        self.name = name or self.__class__.__name__
-        self.logger = logging.getLogger(self.name)
-        self.context: List[Dict[str, Any]] = []  # 模块隔离的临时上下文
-        self.context_processor = context_processor  # 可选的上下文处理器
-
-    @abstractmethod
-    def process(self, messages: List[Dict[str, Any]]) -> Generator[str, None, List[Dict[str, Any]]]:
-        """
-        消息处理逻辑
-
-        子类必须实现此方法，负责流式生成中间结果字符串，并返回最终的消息列表
-
-        Args:
-            messages: 输入消息列表（可以是副本，随意修改）
-
-        Yields:
-            str: 中间处理结果的文本片段
-            
-        Returns:
-            List[Dict[str, Any]]: 最终的完整消息列表
-        """
-        pass
-    
-    def __call__(self, messages: List[Dict[str, Any]]) -> Generator[ModuleChunk, None, None]:
-        """
-        模块调用入口：messages in, chunks + messages out (流式)
-        
-        Args:
-            messages: 输入消息列表 (OpenAI 格式)
-            
-        Yields:
-            - 中间 chunk: str - 用于实时聊天显示
-            - 结尾 chunk: List[Dict] - 完整的消息列表
-        """
-        if self.context_processor:
-            processed_messages = self.context_processor(messages.copy())
-        else:
-            processed_messages = messages.copy()
-        
-        # 创建 generator
-        generator = self.process(processed_messages)
-        
-        # 流式输出中间 chunk
-        try:
-            while True:
-                chunk_text = next(generator)
-                yield ModuleChunk(
-                    content=chunk_text,
-                    finished=False,
-                    metadata=getattr(self, '_metadata', None)
-                )
-        except StopIteration as e:
-            # 从 generator 返回值获取最终 messages
-            final_messages = e.value if e.value is not None else processed_messages
-            self.context = final_messages
-            
-            # 结尾 chunk 包含完整消息列表
-            yield ModuleChunk(
-                content="",  # 最后一个 chunk 可以没有文本内容
-                finished=True,
-                messages=self.context,
-                metadata=getattr(self, '_metadata', None)
-            )
-
-    def log(self, level: str, message: str):
-        """统一日志接口"""
-        getattr(self.logger, level.lower())(message)
+from .base import BaseModule, ModuleChunk
+from ..llm import LLMManager
+from ..tool_manager import ToolManager
+from ..utils import extract_json_codeblock
 
 
 class LLMModule(BaseModule):
@@ -388,12 +287,14 @@ class ToolUseModule(BaseModule):
         return self.tool_manager.get_tools_description()
 
 
-class ReActModule(BaseModule):
+class ToolUseLoopModule(BaseModule):
     """
-    ReAct 模块：实现 Reasoning + Acting 模式
+    工具使用循环模块：自动检测并执行工具调用的循环
     
     组合 LLMModule 和 ToolUseModule，实现完整的循环：
-    LLM 思考 -> 解析工具调用 -> 执行工具 -> LLM 观察 -> ...
+    LLM 生成 -> 解析工具调用 -> 执行工具 -> LLM 继续响应 -> ...
+    
+    注意：这不是标准的 ReAct 模式（缺少显式的 Thought/Observation 结构）
     """
     
     def __init__(
@@ -418,7 +319,7 @@ class ReActModule(BaseModule):
             context_processor: 上下文处理器函数
             name: 模块名称
         """
-        super().__init__(name or "ReActModule", context_processor)
+        super().__init__(name or "ToolUseLoopModule", context_processor)
         
         self.model_name = model_name
         self.config_path = config_path
@@ -434,7 +335,7 @@ class ReActModule(BaseModule):
     
     def process(self, messages: List[Dict[str, Any]]) -> Generator[str, None, List[Dict[str, Any]]]:
         """
-        执行 ReAct 循环：Reasoning -> Acting -> Observation
+        执行工具使用循环：LLM 生成 -> 工具执行 -> LLM 继续
         
         主循环条件：只要模型输出中有工具调用，就继续推理
         安全阀：max_iterations 防止无限循环
@@ -474,7 +375,7 @@ class ReActModule(BaseModule):
             
             # 如果没有工具调用，下一轮循环会自然结束
             if not has_tool_call:
-                self.log("info", "No tool call found, ending ReAct loop")
+                self.log("info", "No tool call found, ending tool use loop")
         
         return current_messages  # 返回最终的消息列表
 
@@ -534,6 +435,7 @@ class PlanModule(BaseModule):
                 }
         return current_messages
     
+
 class PlanAndSolveModule(BaseModule):
     """
     规划与解决模块：先生成计划，再逐步执行计划中的每一步
@@ -573,7 +475,7 @@ class PlanAndSolveModule(BaseModule):
             model_name=model_name,
             config_path=config_path
         )
-        self.solver_module = ReActModule(
+        self.solver_module = ToolUseLoopModule(
             model_name=model_name,
             config_path=config_path,
             mcp_config=mcp_config,
@@ -735,6 +637,7 @@ class PlanAndSolveModule(BaseModule):
         
         return final_messages
 
+
 # TODO: need fully test
 class CompositeModule(BaseModule):
     """
@@ -834,6 +737,7 @@ class CompositeModule(BaseModule):
         
         return current_messages
     
+
 def module_output_printer(generator: Generator[ModuleChunk, None, None]):
     """
     辅助函数：打印模块的流式输出结果
@@ -850,7 +754,8 @@ def module_output_printer(generator: Generator[ModuleChunk, None, None]):
                 print(f"\n[{i}] {msg['role'].upper()}:")
                 print(json.dumps(msg, indent=2, ensure_ascii=False))
 
-if __name__ == "__main__":
+
+def main():
     # llm_module = LLMModule(
     #     model_name="Qwen3-14B",
     #     name="TestLLMModule"
@@ -878,7 +783,7 @@ if __name__ == "__main__":
     #     {"role": "assistant", "content": "<tool_call>\n{\"name\": \"greet\", \"arguments\": {\"content\": \"你好，朋友！\"}}\n</tool_call>"}
     # ]))
 
-    react_module = ReActModule(
+    tool_use_loop_module = ToolUseLoopModule(
         model_name="Qwen3-14B",
         local_tools_folder="toolbox",
         mcp_config={
@@ -905,14 +810,14 @@ if __name__ == "__main__":
                 }
             }
         },
-        name="TestReActModule"
+        name="TestToolUseLoopModule"
     )
 
-    module_output_printer(react_module([
+    module_output_printer(tool_use_loop_module([
         {"role": "system", "content": 
-            f"你是一个Agent，可以通过<tool_call>\n{{'name': ..., 'arguments': ...}}\n</tool_call>格式调用工具\n你可以使用的工具如下：\n{react_module.tool_module.get_tools_description()}\n需要时使用工具。"
+            f"你是一个Agent，可以通过<tool_call>\n{{'name': ..., 'arguments': ...}}\n</tool_call>格式调用工具\n你可以使用的工具如下：\n{tool_use_loop_module.tool_module.get_tools_description()}\n需要时使用工具。"
         },
-        {"role": "user", "content": "使用工具计算88*72"}
+        {"role": "user", "content": "获取长沙今天的天气"}
     ]))
 
     # plan_and_solve_module = PlanAndSolveModule(
@@ -935,3 +840,7 @@ if __name__ == "__main__":
     #     },
     #     {"role": "user", "content": "你好Agent，你可以向我打招呼并介绍自己吗？"}
     # ]))
+
+
+if __name__ == "__main__":
+    main()

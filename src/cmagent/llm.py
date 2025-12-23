@@ -18,6 +18,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class LLMResponse:
     """LLM响应对象，包含内容和元数据"""
@@ -537,8 +538,7 @@ class LLMManager:
         return self.usage_logger.get_statistics()
 
 
-# 使用示例
-if __name__ == "__main__":
+def main():
     # 方式1: 不记录日志
     manager = LLMManager('config.yaml')
     response = manager.chat('Qwen3-14B', "你好")
@@ -576,3 +576,7 @@ if __name__ == "__main__":
 
     for chunk in manager_with_callback.chat_stream('Qwen3-14B', "你好"):
         print(chunk, end='', flush=True)
+
+
+if __name__ == "__main__":
+    main()

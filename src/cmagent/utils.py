@@ -3,6 +3,7 @@ import re
 import logging
 import dirtyjson
 
+
 def extract_json_codeblock(md_text: str) -> Tuple[Dict[str, Any], Optional[str]]:
     match = re.search(r"```json[^\n]*\r?\n(.*?)\r?\n?```", md_text, re.DOTALL | re.IGNORECASE)
     if not match:
@@ -26,6 +27,7 @@ def extract_json_codeblock(md_text: str) -> Tuple[Dict[str, Any], Optional[str]]
     logging.error("%s\n↳ Error detail: %s\n↳ (block excerpt, first 200 chars): %r",
                   msg, detail, block[:200])
     return {}, detail
+
 
 def safe_json_parse(json_text: str) -> Tuple[Optional[dict], Optional[str]]:
     """

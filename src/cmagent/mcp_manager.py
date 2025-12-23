@@ -8,10 +8,10 @@ MCP 服务器管理器 - 统一管理所有 MCP 服务
     - 状态监控和日志记录
 
 使用方法：
-    python mcp_manager.py start       # 启动所有服务器
-    python mcp_manager.py stop        # 停止所有服务器
-    python mcp_manager.py restart     # 重启所有服务器
-    python mcp_manager.py status      # 查看服务器状态
+    python -m cmagent.mcp_manager start       # 启动所有服务器
+    python -m cmagent.mcp_manager stop        # 停止所有服务器
+    python -m cmagent.mcp_manager restart     # 重启所有服务器
+    python -m cmagent.mcp_manager status      # 查看服务器状态
 """
 
 import json
@@ -34,6 +34,20 @@ PIDS_FILE = ".mcp_pids.json"         # 进程ID存储文件
 LOGS_DIR = "logs/mcp"                 # 日志目录
 
 
+def _find_project_root(start: Path) -> Path:
+    for parent in [start] + list(start.parents):
+        if (parent / "pyproject.toml").exists():
+            return parent
+    return start
+
+
+def _safe_relpath(path: Path, base: Path) -> str:
+    try:
+        return str(path.relative_to(base))
+    except ValueError:
+        return str(path)
+
+
 # ==============================================================================
 # MCP 服务器管理器
 # ==============================================================================
@@ -47,8 +61,9 @@ class MCPManager:
         Args:
             servers_dir: MCP 服务器脚本所在目录（相对于项目根目录）
         """
-        self.project_root = Path(__file__).parent
-        self.servers_dir = self.project_root / servers_dir
+        self.package_root = Path(__file__).resolve().parent
+        self.project_root = _find_project_root(self.package_root)
+        self.servers_dir = self._resolve_servers_dir(servers_dir)
         self.pids_file = self.project_root / PIDS_FILE
         self.logs_dir = self.project_root / LOGS_DIR
         
@@ -57,6 +72,12 @@ class MCPManager:
         
         # 自动发现服务器
         self.servers = self._discover_servers()
+    
+    def _resolve_servers_dir(self, servers_dir: str) -> Path:
+        package_path = self.package_root / servers_dir
+        if package_path.exists():
+            return package_path
+        return self.project_root / servers_dir
     
     # ==========================================================================
     # 服务器发现
@@ -168,8 +189,8 @@ class MCPManager:
         log_file = self.logs_dir / f"{name}.log"
         print(f"🚀 启动 {name} 服务器...")
         print(f"   端口: {port}")
-        print(f"   脚本: {script.relative_to(self.project_root)}")
-        print(f"   日志: {log_file.relative_to(self.project_root)}")
+        print(f"   脚本: {_safe_relpath(script, self.project_root)}")
+        print(f"   日志: {_safe_relpath(log_file, self.project_root)}")
         
         try:
             with open(log_file, 'w') as log:
@@ -350,10 +371,10 @@ def main():
     else:
         print("❌ 未知命令")
         print("\n使用方法:")
-        print(f"  python {Path(__file__).name} start       # 启动所有服务器")
-        print(f"  python {Path(__file__).name} stop        # 停止所有服务器")
-        print(f"  python {Path(__file__).name} restart     # 重启所有服务器")
-        print(f"  python {Path(__file__).name} status      # 查看服务器状态")
+        print("  python -m cmagent.mcp_manager start       # 启动所有服务器")
+        print("  python -m cmagent.mcp_manager stop        # 停止所有服务器")
+        print("  python -m cmagent.mcp_manager restart     # 重启所有服务器")
+        print("  python -m cmagent.mcp_manager status      # 查看服务器状态")
         sys.exit(1)
 
 
