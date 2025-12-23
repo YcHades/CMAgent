@@ -2,9 +2,9 @@
 
 from .base import BaseModule, ModuleChunk
 from .llm_module import LLMModule
-from .planning import PlanAndSolveModule, PlanModule
-from .tool_use import ToolUseLoopModule, ToolUseModule
-from .modules import CompositeModule, module_output_printer
+from .plan_module import PlanModule
+from .tool_use_module import ToolUseLoopModule, ToolUseModule
+from .react import ReActModule, ReActAgent
 
 __all__ = [
     "BaseModule",
@@ -13,7 +13,6 @@ __all__ = [
     "ToolUseModule",
     "ToolUseLoopModule",
     "PlanModule",
-    "PlanAndSolveModule",
-    "CompositeModule",
-    "module_output_printer",
+    "ReActModule",
+    "ReActAgent",
 ]

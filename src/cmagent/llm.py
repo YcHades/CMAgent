@@ -15,9 +15,7 @@ from dataclasses import asdict, dataclass
 from typing import Dict, Generator, List, Optional, Any, Union, Callable
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 @dataclass
 class LLMResponse:

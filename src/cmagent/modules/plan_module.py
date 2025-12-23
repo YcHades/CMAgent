@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Generator, Optional, Callable
 
 from .base import BaseModule
 from .llm_module import LLMModule
-from .tool_use import ToolUseLoopModule
+from .tool_use_module import ToolUseLoopModule
 from ..utils import extract_json_codeblock
 
 

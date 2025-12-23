@@ -10,6 +10,6 @@ llm:
   gpt-5:
     model: gpt-5
 
-  Qwen3-14B:
+  qwen3-14b:
     model: Qwen3-14B
     base_url: http://127.0.0.1:8101/v1

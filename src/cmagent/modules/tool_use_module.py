@@ -191,7 +191,7 @@ class ToolUseModule(BaseModule):
                 'id': f"chatcmpl-tool-{uuid.uuid4().hex}"
             })
             # 流式输出每个工具结果
-            yield tool_result + "\n"
+            yield tool_result
         
         # 删除最后一条消息中的tool_call格式内容
         content_without_tool_calls = re.sub(self.tool_parse_template, '', last_message, flags=re.DOTALL).strip()
