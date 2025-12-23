@@ -467,11 +467,7 @@ class ToolManager:
                 raise
 
     async def _ensure_mcp_client(self, server_alias: str) -> Any:
-        """确保 MCP 客户端已连接（延迟初始化）"""
-        # 如果已存在连接，直接返回
-        if server_alias in self.mcp_client_instances:
-            return self.mcp_client_instances[server_alias]
-        
+        """确保 MCP 客户端已连接（延迟初始化 + 自动重连）"""
         # 检查配置是否存在
         if server_alias not in self.mcp_configs:
             raise ValueError(
@@ -479,16 +475,36 @@ class ToolManager:
                 "Call load_from_mcp_config first."
             )
         
+        # 如果已存在连接，检查连接状态
+        if server_alias in self.mcp_client_instances:
+            client = self.mcp_client_instances[server_alias]
+            # 尝试验证连接是否有效
+            try:
+                # 简单验证：检查 session 是否存在
+                if hasattr(client, '_session') and client._session is not None:
+                    return client
+            except Exception as e:
+                self.logger.warning(f"⚠ Existing connection to '{server_alias}' is invalid: {e}")
+                # 连接无效，清理并重建
+                try:
+                    await client.__aexit__(None, None, None)
+                except:
+                    pass
+                del self.mcp_client_instances[server_alias]
+        
         # 创建新连接
         config = self.mcp_configs[server_alias]
         wrapped_config = {"mcpServers": {server_alias: config}}
         client = Client(wrapped_config)
         
-        await client.__aenter__()
-        self.mcp_client_instances[server_alias] = client
-        
-        self.logger.info(f"✓ Connected to MCP server '{server_alias}'")
-        return client
+        try:
+            await client.__aenter__()
+            self.mcp_client_instances[server_alias] = client
+            self.logger.info(f"✓ Connected to MCP server '{server_alias}'")
+            return client
+        except Exception as e:
+            self.logger.error(f"✗ Failed to connect to MCP server '{server_alias}': {e}")
+            raise RuntimeError(f"Failed to establish MCP connection to '{server_alias}': {e}")
 
     # ==========================================================================
     # 内部方法 - 参数校验
