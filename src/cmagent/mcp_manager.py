@@ -73,6 +73,7 @@ class MCPManager:
         base_port: int = BASE_PORT,
         pids_file: str = PIDS_FILE,
         logs_dir: str = LOGS_DIR,
+        server_args: Optional[List[str]] = None,
     ):
         """初始化管理器
         
@@ -81,6 +82,7 @@ class MCPManager:
             base_port: 起始端口号
             pids_file: 进程ID记录文件路径（可绝对或相对项目根）
             logs_dir: 日志目录（可绝对或相对项目根）
+            server_args: 传递给服务器脚本的额外参数列表
         """
         self.package_root = Path(__file__).resolve().parent
         self.project_root = _find_project_root(self.package_root)
@@ -88,6 +90,7 @@ class MCPManager:
         self.base_port = int(base_port)
         self.pids_file = _resolve_path(self.project_root, pids_file)
         self.logs_dir = _resolve_path(self.project_root, logs_dir)
+        self.server_args = server_args or []
         
         # 确保目录存在
         self.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -259,12 +262,23 @@ class MCPManager:
         print(f"   日志: {_safe_relpath(log_file, self.project_root)}")
         
         try:
+            # 构建启动命令 - 使用 fastmcp run 以 SSE 方式启动
+            cmd = [
+                "uv", "run", "fastmcp", "run", str(script),
+                "--transport", "sse",
+                "--port", str(port),
+            ]
+            # 添加额外参数（传递给服务器脚本）
+            if self.server_args:
+                cmd.append("--")
+                cmd.extend(self.server_args)
+            
             with open(log_file, 'w') as log:
                 process = subprocess.Popen(
-                    ["uv", "run", str(script), "--port", str(port)],
+                    cmd,
                     stdout=log,
                     stderr=subprocess.STDOUT,
-                    cwd=str(self.project_root)
+                    cwd=str(script.parent)  # 在脚本所在目录运行
                 )
             
             # 保存进程ID
@@ -450,14 +464,25 @@ def main():
         default=LOGS_DIR,
         help="日志目录（相对项目根或绝对路径）",
     )
+    parser.add_argument(
+        "--server-args",
+        type=str,
+        default="",
+        help="传递给服务器脚本的额外参数（用引号包裹），如 '--temp_dir /tmp/mcp'",
+    )
 
     args = parser.parse_args()
+    
+    # 解析 server_args 字符串为列表
+    import shlex
+    server_args = shlex.split(args.server_args) if args.server_args else []
 
     manager = MCPManager(
         servers_dir=args.servers_dir,
         base_port=args.base_port,
         pids_file=args.pids_file,
         logs_dir=args.logs_dir,
+        server_args=server_args,
     )
 
     # 执行命令
