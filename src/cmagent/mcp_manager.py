@@ -15,6 +15,7 @@ MCP 服务器管理器 - 统一管理所有 MCP 服务
 """
 
 import json
+import argparse
 import os
 import signal
 import subprocess
@@ -48,6 +49,17 @@ def _safe_relpath(path: Path, base: Path) -> str:
         return str(path)
 
 
+def _resolve_path(project_root: Path, path_str: str) -> Path:
+    """将给定路径解析为绝对路径（相对项目根目录）
+
+    如果传入的是绝对路径则直接使用；否则将其视为相对于项目根目录的路径。
+    """
+    p = Path(path_str)
+    if p.is_absolute():
+        return p
+    return project_root / p
+
+
 # ==============================================================================
 # MCP 服务器管理器
 # ==============================================================================
@@ -55,17 +67,27 @@ def _safe_relpath(path: Path, base: Path) -> str:
 class MCPManager:
     """MCP 服务器管理器 - 自动发现并管理所有 MCP 服务"""
     
-    def __init__(self, servers_dir: str = SERVERS_DIR):
+    def __init__(
+        self,
+        servers_dir: str = SERVERS_DIR,
+        base_port: int = BASE_PORT,
+        pids_file: str = PIDS_FILE,
+        logs_dir: str = LOGS_DIR,
+    ):
         """初始化管理器
         
         Args:
             servers_dir: MCP 服务器脚本所在目录（相对于项目根目录）
+            base_port: 起始端口号
+            pids_file: 进程ID记录文件路径（可绝对或相对项目根）
+            logs_dir: 日志目录（可绝对或相对项目根）
         """
         self.package_root = Path(__file__).resolve().parent
         self.project_root = _find_project_root(self.package_root)
         self.servers_dir = self._resolve_servers_dir(servers_dir)
-        self.pids_file = self.project_root / PIDS_FILE
-        self.logs_dir = self.project_root / LOGS_DIR
+        self.base_port = int(base_port)
+        self.pids_file = _resolve_path(self.project_root, pids_file)
+        self.logs_dir = _resolve_path(self.project_root, logs_dir)
         
         # 确保目录存在
         self.logs_dir.mkdir(parents=True, exist_ok=True)
@@ -83,12 +105,45 @@ class MCPManager:
     # 服务器发现
     # ==========================================================================
     
+    def _is_mcp_server_script(self, file_path: Path) -> bool:
+        """检测文件是否为 MCP 服务器脚本
+        
+        通过检查文件内容是否包含 fastmcp 相关代码来判断：
+            - 导入 fastmcp 或 FastMCP
+            - 创建 FastMCP 实例
+        
+        Args:
+            file_path: 要检测的 Python 文件路径
+            
+        Returns:
+            如果是 MCP 服务器脚本返回 True，否则返回 False
+        """
+        try:
+            content = file_path.read_text(encoding="utf-8")
+            # 检测 fastmcp 相关特征
+            # 1. 检查是否导入了 fastmcp
+            has_fastmcp_import = (
+                "from fastmcp" in content or
+                "import fastmcp" in content or
+                "from mcp" in content or
+                "import mcp" in content
+            )
+            # 2. 检查是否创建了 FastMCP/Server 实例
+            has_mcp_instance = (
+                "FastMCP(" in content or
+                "mcp.server" in content.lower() or
+                "@mcp.tool" in content
+            )
+            return has_fastmcp_import and has_mcp_instance
+        except Exception:
+            return False
+    
     def _discover_servers(self) -> Dict[str, Dict[str, any]]:
         """自动发现所有 MCP 服务器脚本
         
         规则：
-            - 扫描 SERVERS_DIR 目录
-            - 匹配 *_server.py 文件
+            - 扫描 SERVERS_DIR 目录下的所有 .py 文件
+            - 通过检测文件内容是否使用 fastmcp 来判断是否为服务器脚本
             - 按文件名分配端口（从 BASE_PORT 开始）
         
         Returns:
@@ -99,14 +154,25 @@ class MCPManager:
             return {}
         
         servers = {}
-        port = BASE_PORT
+        port = self.base_port
         
-        # 扫描服务器脚本（排序以保证端口分配稳定）
-        server_files = sorted(self.servers_dir.glob("*_server.py"))
+        # 扫描所有 Python 文件（排序以保证端口分配稳定）
+        py_files = sorted(self.servers_dir.glob("*.py"))
         
-        for script_path in server_files:
-            # 提取服务器名称（去除 _server.py 后缀）
-            name = script_path.stem.replace("_server", "")
+        for script_path in py_files:
+            # 跳过 __init__.py 和其他特殊文件
+            if script_path.name.startswith("_"):
+                continue
+            
+            # 检测是否为 MCP 服务器脚本
+            if not self._is_mcp_server_script(script_path):
+                continue
+            
+            # 提取服务器名称
+            name = script_path.stem
+            # 如果名称以 _server 结尾，去除后缀
+            if name.endswith("_server"):
+                name = name[:-7]
             
             servers[name] = {
                 "script": script_path,
@@ -347,35 +413,62 @@ class MCPManager:
 
 def main():
     """命令行入口"""
-    manager = MCPManager()
-    
-    # 解析命令
-    if len(sys.argv) < 2:
-        command = "status"
-    else:
-        command = sys.argv[1].lower()
-    
+    parser = argparse.ArgumentParser(
+        description="MCP 服务器管理器",
+        epilog=(
+            "示例: python -m cmagent.mcp_manager start "
+            "--servers-dir mcp_servers --base-port 9000 "
+            "--pids-file .mcp_pids.json --logs-dir logs/mcp"
+        ),
+    )
+
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["start", "stop", "restart", "status"],
+        default="status",
+        help="要执行的命令",
+    )
+    parser.add_argument(
+        "--servers-dir",
+        default=SERVERS_DIR,
+        help="MCP 服务器脚本目录（相对项目根或绝对路径）",
+    )
+    parser.add_argument(
+        "--base-port",
+        type=int,
+        default=BASE_PORT,
+        help="起始端口号（为发现的服务器顺序递增分配）",
+    )
+    parser.add_argument(
+        "--pids-file",
+        default=PIDS_FILE,
+        help="进程ID记录文件路径（相对项目根或绝对路径）",
+    )
+    parser.add_argument(
+        "--logs-dir",
+        default=LOGS_DIR,
+        help="日志目录（相对项目根或绝对路径）",
+    )
+
+    args = parser.parse_args()
+
+    manager = MCPManager(
+        servers_dir=args.servers_dir,
+        base_port=args.base_port,
+        pids_file=args.pids_file,
+        logs_dir=args.logs_dir,
+    )
+
     # 执行命令
-    if command == "start":
+    if args.command == "start":
         manager.start_all()
-    
-    elif command == "stop":
+    elif args.command == "stop":
         manager.stop_all()
-    
-    elif command == "restart":
+    elif args.command == "restart":
         manager.restart_all()
-    
-    elif command == "status":
+    elif args.command == "status":
         manager.show_status()
-    
-    else:
-        print("❌ 未知命令")
-        print("\n使用方法:")
-        print("  python -m cmagent.mcp_manager start       # 启动所有服务器")
-        print("  python -m cmagent.mcp_manager stop        # 停止所有服务器")
-        print("  python -m cmagent.mcp_manager restart     # 重启所有服务器")
-        print("  python -m cmagent.mcp_manager status      # 查看服务器状态")
-        sys.exit(1)
 
 
 if __name__ == "__main__":
