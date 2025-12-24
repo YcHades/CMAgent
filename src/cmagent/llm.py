@@ -373,8 +373,9 @@ class LLM:
                 if chunk.choices:
                     c0 = chunk.choices[0]
                     content = c0.delta.content
-                    content_parts.append(content)
-                    yield content
+                    if content is not None:
+                        content_parts.append(content)
+                        yield content
                     if c0.finish_reason and c0.finish_reason != 'stop':
                         logging.warning(f"响应结束理由异常: {c0.finish_reason}")
                 elif chunk.usage:

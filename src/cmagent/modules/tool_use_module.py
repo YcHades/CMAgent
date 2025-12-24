@@ -188,7 +188,7 @@ class ToolUseModule(BaseModule):
                 'name': tool_name,
                 'args': tool_args,
                 'result': tool_result,
-                'id': f"chatcmpl-tool-{uuid.uuid4().hex}"
+                'id': uuid.uuid4().hex
             })
             # 流式输出每个工具结果
             yield tool_result

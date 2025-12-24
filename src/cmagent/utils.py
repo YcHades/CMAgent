@@ -19,8 +19,10 @@ def module_output_printer(generator: Generator[ModuleChunk, None, None]):
         if chunk.finished:
             print("\n\n=== Final Context ===")
             for i, msg in enumerate(chunk.messages, 1):
-                print(f"\n[{i}] {msg['role'].upper()}:")
-                print(json.dumps(msg, indent=2, ensure_ascii=False))
+                print(f"\n[{i}] {msg['role'].upper()}")
+                for k, v in msg.items():
+                    if k != 'role':
+                        print(f"[{k}]: {v}")
 
 def extract_json_codeblock(md_text: str) -> Tuple[Dict[str, Any], Optional[str]]:
     match = re.search(r"```json[^\n]*\r?\n(.*?)\r?\n?```", md_text, re.DOTALL | re.IGNORECASE)
