@@ -21,7 +21,7 @@ class ToolUseModule(BaseModule):
     2. MCP 工具：通过 MCP 服务器提供的远程工具（HTTP/STDIO）
     
     特性：
-    - MCP 工具名称自动添加命名空间前缀（避免冲突）
+    - MCP 工具优先保持原名，仅在命名冲突时添加服务器前缀
     - 支持同时配置多个 MCP 服务器
     - 懒加载机制：仅在首次使用时加载工具
     - 自动参数校验和结果序列化
@@ -38,13 +38,17 @@ class ToolUseModule(BaseModule):
     ):
         """
         Args:
-            mcp_config: MCP 配置字典，格式：
+            mcp_config: MCP 配置字典，两种格式：
                 {
                     "mcpServers": {
                         "server_name": {
                             "command": "uvx",
                             "args": [...],
                             "transport": "stdio"
+                        },
+                        "index": {
+                            "url": "http://localhost:8001/sse",
+                            "transport": "sse"
                         }
                     }
                 }
@@ -55,7 +59,8 @@ class ToolUseModule(BaseModule):
             name: 模块名称
             
         注意：
-            MCP 工具会自动添加服务器别名前缀，如: server_name_tool_name
+            MCP 工具优先使用原始工具名，仅在命名冲突时添加服务器前缀，
+            如: server_name_tool_name
         """
         super().__init__(name or "ToolUseModule", context_processor)
         
@@ -70,21 +75,21 @@ class ToolUseModule(BaseModule):
     def load_tools(self):
         """加载工具：从本地文件夹和 MCP 配置
         
-        注意：MCP 工具名称会自动添加命名空间前缀，如: server_name_tool_name
+        注意：MCP 工具优先使用原始名称，仅在命名冲突时才添加服务器前缀
         """
         if self._tools_loaded:
             return
         
         # 加载本地工具
         if self.local_tools_folder:
-            self.tool_manager.load_from_folder(
+            self.tool_manager.load_local_tools(
                 tools_folder=self.local_tools_folder,
                 local_files_selector=self.local_files_selector
             )
         
         # 加载 MCP 工具配置（工具会在首次调用时才实际加载）
         if self.mcp_config:
-            self.tool_manager.load_from_mcp_config(self.mcp_config)
+            self.tool_manager.load_mcp_tools(self.mcp_config)
         
         self._tools_loaded = True
         count = self.tool_manager.get_tool_count()
@@ -199,7 +204,7 @@ class ToolUseModule(BaseModule):
         # 构造tool_call之后的assistant消息
         messages[-1] = {
             'role': 'assistant',
-            'content': content_without_tool_calls,
+            'content': None,
             'tool_calls': [
                 {
                     'id': call['id'],
