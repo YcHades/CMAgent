@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass
 from typing import Dict, Generator, List, Optional, Any, Union, Callable
 
 load_dotenv()
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("LLMCallLogger")
 
 @dataclass
 class LLMResponse:
@@ -307,7 +307,7 @@ class LLM:
 
             c0 = response.choices[0]
             if c0.finish_reason != 'stop':
-                logging.warning(f"响应结束理由异常: {c0.finish_reason}")
+                logger.warning(f"响应结束理由异常: {c0.finish_reason}")
 
             # 计算耗时
             duration = time.time() - start_time
@@ -377,13 +377,13 @@ class LLM:
                         content_parts.append(content)
                         yield content
                     if c0.finish_reason and c0.finish_reason != 'stop':
-                        logging.warning(f"响应结束理由异常: {c0.finish_reason}")
+                        logger.warning(f"响应结束理由异常: {c0.finish_reason}")
                 elif chunk.usage:
                     prompt_tokens = chunk.usage.prompt_tokens
                     completion_tokens = chunk.usage.completion_tokens
                 else:
-                    logging.error(f"收到未知的流式块: {chunk}")
-            
+                    logger.warning(f"收到未知的流式块: {chunk}")
+
             # 计算耗时
             duration = time.time() - start_time
                         
