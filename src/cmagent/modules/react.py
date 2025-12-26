@@ -88,7 +88,7 @@ Available tools:
             model_name=model_name,
             config_path=config_path,
             enable_thinking=enable_thinking,
-            stop_sequences=["Observation"],
+            stop_sequences={"Observation": 0, "<tool_result>": 0, "</tool_call>": 10},
             name=f"{self.name}.LLM"
         )
         
